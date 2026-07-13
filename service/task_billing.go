@@ -15,8 +15,8 @@ import (
 )
 
 // LogTaskConsumption 记录任务消费日志和统计信息（仅记录，不涉及实际扣费）。
-// 实际扣费已由 BillingSession（PreConsumeBilling + SettleBilling）完成。
-func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
+// billingSettled 仅在 BillingSession 已成功完成结算时为 true。
+func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo, billingSettled bool) {
 	tokenName := c.GetString("token_name")
 	logContent := fmt.Sprintf("操作 %s", info.Action)
 	// 支持任务仅按次计费
@@ -43,6 +43,7 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
 		other["model_ratio"] = info.PriceData.ModelRatio
 	}
 	other["group_ratio"] = info.PriceData.GroupRatioInfo.GroupRatio
+	other["billing_source"] = info.BillingSource
 	if info.PriceData.GroupRatioInfo.HasSpecialRatio {
 		other["user_group_ratio"] = info.PriceData.GroupRatioInfo.GroupSpecialRatio
 	}
@@ -51,14 +52,15 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo) {
 		other["upstream_model_name"] = info.UpstreamModelName
 	}
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
-		ChannelId: info.ChannelId,
-		ModelName: info.OriginModelName,
-		TokenName: tokenName,
-		Quota:     info.PriceData.Quota,
-		Content:   logContent,
-		TokenId:   info.TokenId,
-		Group:     info.UsingGroup,
-		Other:     other,
+		ChannelId:      info.ChannelId,
+		ModelName:      info.OriginModelName,
+		TokenName:      tokenName,
+		Quota:          info.PriceData.Quota,
+		Content:        logContent,
+		TokenId:        info.TokenId,
+		Group:          info.UsingGroup,
+		Other:          other,
+		BillingSettled: billingSettled,
 	})
 	model.UpdateUserUsedQuotaAndRequestCount(info.UserId, info.PriceData.Quota)
 	model.UpdateChannelUsedQuota(info.ChannelId, info.PriceData.Quota)
@@ -131,6 +133,7 @@ func taskBillingOther(task *model.Task) map[string]interface{} {
 			}
 		}
 	}
+	other["billing_source"] = task.PrivateData.BillingSource
 	props := task.Properties
 	if props.UpstreamModelName != "" && props.UpstreamModelName != props.OriginModelName {
 		other["is_model_mapped"] = true
@@ -169,15 +172,17 @@ func RefundTaskQuota(ctx context.Context, task *model.Task, reason string) {
 	other["task_id"] = task.TaskID
 	other["reason"] = reason
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
-		UserId:    task.UserId,
-		LogType:   model.LogTypeRefund,
-		Content:   "",
-		ChannelId: task.ChannelId,
-		ModelName: taskModelName(task),
-		Quota:     quota,
-		TokenId:   task.PrivateData.TokenId,
-		Group:     task.Group,
-		Other:     other,
+		UserId:          task.UserId,
+		LogType:         model.LogTypeRefund,
+		Content:         "",
+		ChannelId:       task.ChannelId,
+		ModelName:       taskModelName(task),
+		Quota:           quota,
+		TokenId:         task.PrivateData.TokenId,
+		Group:           task.Group,
+		Other:           other,
+		BillingSettled:  true,
+		BillingEventKey: fmt.Sprintf("task:%s:refund", task.TaskID),
 	})
 }
 
@@ -232,16 +237,18 @@ func RecalculateTaskQuota(ctx context.Context, task *model.Task, actualQuota int
 	other["pre_consumed_quota"] = preConsumedQuota
 	other["actual_quota"] = actualQuota
 	model.RecordTaskBillingLog(model.RecordTaskBillingLogParams{
-		UserId:    task.UserId,
-		LogType:   logType,
-		Content:   reason,
-		ChannelId: task.ChannelId,
-		ModelName: taskModelName(task),
-		Quota:     logQuota,
-		TokenId:   task.PrivateData.TokenId,
-		Group:     task.Group,
-		Other:     other,
-		NodeName:  task.PrivateData.NodeName,
+		UserId:          task.UserId,
+		LogType:         logType,
+		Content:         reason,
+		ChannelId:       task.ChannelId,
+		ModelName:       taskModelName(task),
+		Quota:           logQuota,
+		TokenId:         task.PrivateData.TokenId,
+		Group:           task.Group,
+		Other:           other,
+		NodeName:        task.PrivateData.NodeName,
+		BillingSettled:  true,
+		BillingEventKey: fmt.Sprintf("task:%s:adjustment:%d:%d", task.TaskID, preConsumedQuota, actualQuota),
 	})
 }
 

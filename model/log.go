@@ -339,13 +339,14 @@ type RecordConsumeLogParams struct {
 	IsStream         bool                   `json:"is_stream"`
 	Group            string                 `json:"group"`
 	Other            map[string]interface{} `json:"other"`
+	BillingSettled   bool                   `json:"-"`
+	BillingEventKey  string                 `json:"-"`
 }
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
-	if !common.LogConsumeEnabled {
-		return
+	if common.LogConsumeEnabled {
+		logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
 	}
-	logger.LogInfo(c, fmt.Sprintf("record consume log: userId=%d, params=%s", userId, common.GetJsonString(params)))
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
@@ -384,11 +385,19 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
 	}
-	err := createLog(log)
-	if err != nil {
-		logger.LogError(c, "failed to record log: "+err.Error())
+	if common.LogConsumeEnabled {
+		if err := createLog(log); err != nil {
+			logger.LogError(c, "failed to record log: "+err.Error())
+		}
+	} else {
+		ensureLogRequestId(log)
 	}
-	if common.DataExportEnabled {
+	if params.BillingSettled {
+		if err := recordConfirmedBillingUsage(log, params.BillingEventKey, BillingUsageEventCharge); err != nil {
+			logger.LogError(c, "记录计费流水失败: "+err.Error())
+		}
+	}
+	if common.LogConsumeEnabled && common.DataExportEnabled {
 		gopool.Go(func() {
 			LogQuotaData(QuotaDataLogParams{
 				UserID:    userId,
@@ -407,22 +416,21 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 }
 
 type RecordTaskBillingLogParams struct {
-	UserId    int
-	LogType   int
-	Content   string
-	ChannelId int
-	ModelName string
-	Quota     int
-	TokenId   int
-	Group     string
-	Other     map[string]interface{}
-	NodeName  string // 任务发起节点；为空时回退当前节点
+	UserId          int
+	LogType         int
+	Content         string
+	ChannelId       int
+	ModelName       string
+	Quota           int
+	TokenId         int
+	Group           string
+	Other           map[string]interface{}
+	BillingSettled  bool
+	BillingEventKey string
+	NodeName        string // 任务发起节点；为空时回退当前节点
 }
 
 func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
-	if params.LogType == LogTypeConsume && !common.LogConsumeEnabled {
-		return
-	}
 	username, _ := GetUsernameById(params.UserId, false)
 	tokenName := ""
 	if params.TokenId > 0 {
@@ -445,11 +453,25 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 		Group:     params.Group,
 		Other:     common.MapToJsonStr(params.Other),
 	}
-	err := createLog(log)
-	if err != nil {
-		common.SysLog("failed to record task billing log: " + err.Error())
+	shouldWriteLog := params.LogType != LogTypeConsume || common.LogConsumeEnabled
+	if shouldWriteLog {
+		if err := createLog(log); err != nil {
+			common.SysLog("failed to record task billing log: " + err.Error())
+		}
+	} else {
+		ensureLogRequestId(log)
 	}
-	if params.LogType == LogTypeConsume && common.DataExportEnabled {
+	if params.BillingSettled {
+		eventType := BillingUsageEventAdjustmentCharge
+		if params.LogType == LogTypeRefund {
+			eventType = BillingUsageEventRefund
+			log.Quota = -log.Quota
+		}
+		if err := recordConfirmedBillingUsage(log, params.BillingEventKey, eventType); err != nil {
+			common.SysLog("记录任务计费流水失败: " + err.Error())
+		}
+	}
+	if params.LogType == LogTypeConsume && common.LogConsumeEnabled && common.DataExportEnabled {
 		nodeName := params.NodeName
 		if nodeName == "" {
 			nodeName = common.NodeName
@@ -468,6 +490,66 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 			})
 		})
 	}
+}
+
+func billingUsageInt64(value interface{}) int64 {
+	switch number := value.(type) {
+	case int:
+		return int64(number)
+	case int64:
+		return number
+	case float64:
+		return int64(number)
+	case float32:
+		return int64(number)
+	default:
+		return 0
+	}
+}
+
+// recordConfirmedBillingUsage 将已完成结算的日志快照写入独立计费流水。
+func recordConfirmedBillingUsage(log *Log, eventKey string, eventType string) error {
+	if log == nil || log.UserId <= 0 {
+		return errors.New("invalid billing log")
+	}
+	other, _ := common.StrToMap(log.Other)
+	billingSource := "wallet"
+	upstreamModelName := ""
+	taskId := ""
+	cacheReadTokens := int64(0)
+	cacheWriteTokens := int64(0)
+	if other != nil {
+		if value, ok := other["billing_source"].(string); ok && value != "" {
+			billingSource = value
+		}
+		upstreamModelName, _ = other["upstream_model_name"].(string)
+		taskId, _ = other["task_id"].(string)
+		cacheReadTokens = billingUsageInt64(other["cache_tokens"])
+		cacheWriteTokens = billingUsageInt64(other["cache_write_tokens"])
+		if cacheWriteTokens == 0 {
+			cacheWrite5m := billingUsageInt64(other["cache_creation_tokens_5m"])
+			cacheWrite1h := billingUsageInt64(other["cache_creation_tokens_1h"])
+			if cacheWrite5m > 0 || cacheWrite1h > 0 {
+				cacheWriteTokens = cacheWrite5m + cacheWrite1h
+			} else {
+				cacheWriteTokens = billingUsageInt64(other["cache_creation_tokens"])
+			}
+		}
+	}
+	if eventKey == "" {
+		identity := log.RequestId
+		if taskId != "" {
+			identity = taskId
+		}
+		eventKey = fmt.Sprintf("%s:%s", identity, eventType)
+	}
+	return CreateBillingUsageRecord(BillingUsageRecordParams{
+		IdempotencyKey: eventKey, EventType: eventType, RequestId: log.RequestId, TaskId: taskId,
+		UserId: log.UserId, Username: log.Username, ChannelId: log.ChannelId, ModelName: log.ModelName,
+		UpstreamModelName: upstreamModelName, PromptTokens: int64(log.PromptTokens), CompletionTokens: int64(log.CompletionTokens),
+		CacheReadTokens: cacheReadTokens, CacheWriteTokens: cacheWriteTokens, BillingSource: billingSource,
+		Quota: int64(log.Quota), ConfirmedAt: log.CreatedAt,
+	})
 }
 
 func GetAllLogs(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, startIdx int, num int, channel int, group string, requestId string, upstreamRequestId string) (logs []*Log, total int64, err error) {

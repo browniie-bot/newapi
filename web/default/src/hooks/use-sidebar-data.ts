@@ -25,6 +25,7 @@ import {
   Key,
   LayoutDashboard,
   ListTodo,
+  ChartColumn,
   MessageSquare,
   Radio,
   ServerCog,
@@ -88,6 +89,11 @@ export function useSidebarData(): SidebarData {
             title: t('Usage Logs'),
             url: '/usage-logs/common',
             icon: FileText,
+          },
+          {
+            title: t('Usage Reports'),
+            url: '/usage-reports',
+            icon: ChartColumn,
           },
           {
             title: t('Task Logs'),

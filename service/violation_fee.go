@@ -145,6 +145,7 @@ func ChargeViolationFeeIfNeeded(ctx *gin.Context, relayInfo *relaycommon.RelayIn
 		"upstream_error_type":  oai.Type,
 		"upstream_error_code":  fmt.Sprintf("%v", oai.Code),
 		"violation_fee_marker": CSAMViolationMarker,
+		"billing_source":       relayInfo.BillingSource,
 	}
 
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
@@ -158,6 +159,9 @@ func ChargeViolationFeeIfNeeded(ctx *gin.Context, relayInfo *relaycommon.RelayIn
 		IsStream:       relayInfo.IsStream,
 		Group:          relayInfo.UsingGroup,
 		Other:          other,
+		BillingSettled: true,
+		// 违规附加费与本次请求的正常扣费必须使用不同幂等键，避免其中一笔被误判为重复事件。
+		BillingEventKey: fmt.Sprintf("%s:violation_fee", ctx.GetString(common.RequestIdKey)),
 	})
 
 	return true

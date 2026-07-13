@@ -295,6 +295,13 @@ func SetApiRouter(router *gin.Engine) {
 		dataRoute.GET("/flow", middleware.AdminAuth(), controller.GetAllFlowQuotaDates)
 		dataRoute.GET("/flow/self", middleware.UserAuth(), controller.GetUserFlowQuotaDates)
 
+		usageReportRoute := apiRouter.Group("/usage-report")
+		usageReportRoute.Use(middleware.UserAuth())
+		{
+			usageReportRoute.GET("/", controller.GetUsageReport)
+			usageReportRoute.GET("/filters", controller.GetUsageReportFilters)
+		}
+
 		logRoute.Use(middleware.CORS(), middleware.CriticalRateLimit())
 		{
 			logRoute.GET("/token", middleware.TokenAuthReadOnly(), controller.GetLogByKey)

@@ -228,6 +228,8 @@ func runMidjourneyTaskUpdateOnce(ctx context.Context, report func(processed, tot
 						"task_id": task.MjId,
 						"reason":  "构图失败",
 					},
+					BillingSettled:  err == nil,
+					BillingEventKey: fmt.Sprintf("midjourney:%s:refund", task.MjId),
 				})
 			}
 		}

@@ -370,7 +370,9 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, summary.Quota)
 	}
 
+	billingSettled := true
 	if err := SettleBilling(ctx, relayInfo, summary.Quota); err != nil {
+		billingSettled = false
 		logger.LogError(ctx, "error settling billing: "+err.Error())
 	}
 
@@ -472,6 +474,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
+		BillingSettled:   billingSettled,
 	})
 	gopool.Go(func() {
 		perfmetrics.RecordRelaySample(relayInfo, true, int64(summary.CompletionTokens))

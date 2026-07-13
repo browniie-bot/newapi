@@ -226,7 +226,9 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 
+	billingSettled := true
 	if err := SettleBilling(ctx, relayInfo, quota); err != nil {
+		billingSettled = false
 		logger.LogError(ctx, "error settling billing: "+err.Error())
 	}
 
@@ -252,6 +254,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
+		BillingSettled:   billingSettled,
 	})
 }
 
@@ -347,7 +350,9 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
 	}
 
+	billingSettled := true
 	if err := SettleBilling(ctx, relayInfo, quota); err != nil {
+		billingSettled = false
 		logger.LogError(ctx, "error settling billing: "+err.Error())
 	}
 
@@ -373,6 +378,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		IsStream:         relayInfo.IsStream,
 		Group:            relayInfo.UsingGroup,
 		Other:            other,
+		BillingSettled:   billingSettled,
 	})
 	gopool.Go(func() {
 		perfmetrics.RecordRelaySample(relayInfo, true, int64(usage.CompletionTokens))
